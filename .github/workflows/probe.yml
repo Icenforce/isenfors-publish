@@ -1,0 +1,32 @@
+# ONE-TIME reachability probe. Uses only the HOST secret (no login is attempted). Run once by hand (workflow_dispatch), read the log, then delete this file.
+name: probe-onecom
+on: workflow_dispatch
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Runner egress IP (for the record)
+        run: curl -s https://api.ipify.org || true
+      - name: TCP connect + SSH banner + host key on port 22 (no login)
+        env:
+          PROBE_HOST: ${{ secrets.ONECOM_SFTP_HOST }}
+        run: |
+          pip install --quiet paramiko==3.4.0
+          python3 - <<'PY'
+          import socket, hashlib, base64, paramiko, sys
+          import os; HOST = os.environ.get("PROBE_HOST", "").strip()
+          if not HOST: print("RESULT: HOST SECRET EMPTY OR MISSING"); sys.exit(1)
+          s = socket.create_connection((HOST, 22), timeout=15); s.settimeout(15)
+          try:
+              banner = s.recv(256).decode(errors="replace").strip()
+          except socket.timeout:
+              print("RESULT: TCP connected but NO SSH banner within 15 s"); sys.exit(1)
+          s.close(); print("banner:", banner)
+          t = paramiko.Transport((HOST, 22)); t.start_client(timeout=15)
+          k = t.get_remote_server_key(); t.close()
+          print("host key:", k.get_name(), "SHA256:" + base64.b64encode(hashlib.sha256(k.asbytes()).digest()).decode().rstrip("="))
+          print("sha256hex[:32]:", hashlib.sha256(k.asbytes()).hexdigest()[:32])
+          print("RESULT: REACHABLE")
+          PY
