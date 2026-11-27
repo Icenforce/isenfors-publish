@@ -1,0 +1,15 @@
+{
+ "status": "CHECK_OK",
+ "bundle": "check-45970749426",
+ "run_id": "45970749426",
+ "started_utc": "2026-11-27T09:05:15Z",
+ "uploaded": [],
+ "reason": null,
+ "check_only": true,
+ "root_secret_set": false,
+ "hostkey_pinned": true,
+ "login_ok": true,
+ "root_autodetected": true,
+ "root_confirmed": true,
+ "finished_utc": "2026-11-27T09:05:19Z"
+}
