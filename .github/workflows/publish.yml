@@ -1,0 +1,45 @@
+# Uploads one pre-checked bundle (bundles/<id>/) to one.com over SFTP.
+# Triggered when the box pushes bundles/<id>/bundle.json (always pushed LAST), or by hand.
+name: publish-onecom
+on:
+  push:
+    branches: [main]
+    paths: ["bundles/*/bundle.json"]
+  workflow_dispatch:
+    inputs:
+      bundle_id: {description: "bundles/<id> to upload", required: true}
+      check_only: {description: "connect + root check only", required: false, default: "false"}
+permissions:
+  contents: write          # to commit results/<id>.json back
+concurrency: {group: publish-onecom, cancel-in-progress: false}
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 2}
+      - name: Pick bundle
+        id: pick
+        run: |
+          if [ -n "${{ github.event.inputs.bundle_id }}" ]; then id="${{ github.event.inputs.bundle_id }}";
+          else id=$(git diff --name-only HEAD~1 HEAD -- 'bundles/*/bundle.json' | head -1 | cut -d/ -f2); fi
+          case "$id" in (*[!A-Za-z0-9T_-]*|"") echo "bad bundle id '$id'"; exit 1;; esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - run: pip install --quiet paramiko==3.4.0
+      - name: Upload
+        env:
+          ONECOM_SFTP_HOST: ${{ secrets.ONECOM_SFTP_HOST }}
+          ONECOM_SFTP_USER: ${{ secrets.ONECOM_SFTP_USER }}
+          ONECOM_SFTP_PASSWORD: ${{ secrets.ONECOM_SFTP_PASSWORD }}
+          ONECOM_SFTP_ROOT: ${{ secrets.ONECOM_SFTP_ROOT }}
+          ONECOM_HOSTKEY_SHA256: ${{ vars.ONECOM_HOSTKEY_SHA256 }}
+          CHECK_ONLY: ${{ github.event.inputs.check_only }}
+        run: python3 tools/upload_bundle.py "bundles/${{ steps.pick.outputs.id }}" "results/${{ steps.pick.outputs.id }}.json"
+      - name: Commit result (success OR failure)
+        if: always()
+        run: |
+          f="results/${{ steps.pick.outputs.id }}.json"
+          [ -f "$f" ] || { mkdir -p results; echo '{"status":"FAILED","reason":"uploader did not write a result","run_id":"${{ github.run_id }}"}' > "$f"; }
+          git config user.name publish-bot; git config user.email publish-bot@users.noreply.github.com
+          git add "$f"; git commit -m "result ${{ steps.pick.outputs.id }}" && git push || true
