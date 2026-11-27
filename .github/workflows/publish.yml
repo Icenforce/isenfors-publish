@@ -7,7 +7,7 @@ on:
     paths: ["bundles/*/bundle.json"]
   workflow_dispatch:
     inputs:
-      bundle_id: {description: "bundles/<id> to upload", required: true}
+      bundle_id: {description: "bundles/<id> to upload (ignored when check_only)", required: false, default: ""}
       check_only: {description: "connect + root check only", required: false, default: "false"}
 permissions:
   contents: write          # to commit results/<id>.json back
@@ -22,7 +22,8 @@ jobs:
       - name: Pick bundle
         id: pick
         run: |
-          if [ -n "${{ github.event.inputs.bundle_id }}" ]; then id="${{ github.event.inputs.bundle_id }}";
+          if [ "${{ github.event.inputs.check_only }}" = "true" ]; then id="check-${{ github.run_id }}";
+          elif [ -n "${{ github.event.inputs.bundle_id }}" ]; then id="${{ github.event.inputs.bundle_id }}";
           else id=$(git diff --name-only HEAD~1 HEAD -- 'bundles/*/bundle.json' | head -1 | cut -d/ -f2); fi
           case "$id" in (*[!A-Za-z0-9T_-]*|"") echo "bad bundle id '$id'"; exit 1;; esac
           echo "id=$id" >> "$GITHUB_OUTPUT"

@@ -16,41 +16,69 @@ def finish(code, reason=None):
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     json.dump(res, open(out, "w"), indent=1); print("RESULT", res["status"], reason or ""); sys.exit(code)
 
-try:
-    meta = json.load(open(os.path.join(bdir, "bundle.json")))
-    blob = base64.b64decode("".join(open(os.path.join(bdir, c)).read() for c in meta["chunks"]))
-    if hashlib.sha256(blob).hexdigest() != meta["tgz_sha256"]: finish(1, "bundle checksum mismatch")
-    want = {f["path"]: f for f in meta["files"]}
-    bad = [p for p in want if FORBIDDEN.search(p)]
-    if bad: finish(1, "forbidden paths in bundle: %d" % len(bad))
-    data = {}
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
-        for m in tf.getmembers():
-            if not m.isfile(): continue
-            if m.name not in want: finish(1, "unexpected file in tgz: " + m.name)
-            data[m.name] = tf.extractfile(m).read()
-    for p, f in want.items():
-        if p not in data: finish(1, "missing from tgz: " + p)
-        if hashlib.sha256(data[p]).hexdigest() != f["sha256"] or len(data[p]) != f["size"]: finish(1, "file checksum mismatch: " + p)
-    print("bundle OK:", len(want), "files")
-except SystemExit: raise
-except Exception as e: finish(1, "bundle read error: %s" % type(e).__name__)
+CHECK = os.environ.get("CHECK_ONLY", "").strip() == "true"
+res["check_only"] = CHECK
+want, data = {}, {}
+if not CHECK:
+  try:
+      meta = json.load(open(os.path.join(bdir, "bundle.json")))
+      blob = base64.b64decode("".join(open(os.path.join(bdir, c)).read() for c in meta["chunks"]))
+      if hashlib.sha256(blob).hexdigest() != meta["tgz_sha256"]: finish(1, "bundle checksum mismatch")
+      want = {f["path"]: f for f in meta["files"]}
+      bad = [p for p in want if FORBIDDEN.search(p)]
+      if bad: finish(1, "forbidden paths in bundle: %d" % len(bad))
+      data = {}
+      with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+          for m in tf.getmembers():
+              if not m.isfile(): continue
+              if m.name not in want: finish(1, "unexpected file in tgz: " + m.name)
+              data[m.name] = tf.extractfile(m).read()
+      for p, f in want.items():
+          if p not in data: finish(1, "missing from tgz: " + p)
+          if hashlib.sha256(data[p]).hexdigest() != f["sha256"] or len(data[p]) != f["size"]: finish(1, "file checksum mismatch: " + p)
+      print("bundle OK:", len(want), "files")
+  except SystemExit: raise
+  except Exception as e: finish(1, "bundle read error: %s" % type(e).__name__)
 
-import paramiko
+import paramiko, urllib.request
 env = lambda k: os.environ.get(k, "").strip()
 host, user, pw, root = env("ONECOM_SFTP_HOST"), env("ONECOM_SFTP_USER"), env("ONECOM_SFTP_PASSWORD"), env("ONECOM_SFTP_ROOT").rstrip("/")
-if not (host and user and pw and root): finish(1, "missing secret(s)")
-res["check_only"] = env("CHECK_ONLY") == "true"
+missing = [k for k, v in (("ONECOM_SFTP_HOST", host), ("ONECOM_SFTP_USER", user), ("ONECOM_SFTP_PASSWORD", pw)) if not v]
+res["root_secret_set"] = bool(root); print("secrets present: HOST=%s USER=%s PASSWORD=%s ROOT=%s" % tuple(bool(x) for x in (host, user, pw, root)))
+if missing: finish(1, "missing secret(s): " + ",".join(missing))
+def live_sha():
+    with urllib.request.urlopen("https://isenfors.se/?nocache=%d" % time.time(), timeout=20) as r: return hashlib.sha256(r.read()).hexdigest()
+def remote_sha(s, p):
+    with s.open(p, "rb") as f: return hashlib.sha256(f.read()).hexdigest()
 try:
     t = paramiko.Transport((host, 22)); t.banner_timeout = 20; t.start_client(timeout=20)
     k = t.get_remote_server_key(); fp = hashlib.sha256(k.asbytes()).hexdigest()
     pin = env("ONECOM_HOSTKEY_SHA256")
     if not pin: finish(1, "host key pin (repo variable ONECOM_HOSTKEY_SHA256) not set")
     if not fp.startswith(pin.lower()): finish(1, "HOST KEY MISMATCH")
-    t.auth_password(user, pw); s = paramiko.SFTPClient.from_transport(t)
-    s.stat(root + "/index.html"); s.stat(root + "/ai-futures/index.html")
-    print("connected, host key pinned, root check OK")
-    if res["check_only"]: t.close(); finish(0)
+    res["hostkey_pinned"] = True; print("host key matches pin")
+    try: t.auth_password(user, pw)
+    except paramiko.AuthenticationException: finish(1, "LOGIN FAILED (user/password rejected)")
+    res["login_ok"] = True; print("login OK")
+    s = paramiko.SFTPClient.from_transport(t)
+    lsha = live_sha()
+    def is_root(d):
+        try: s.stat(d + "/ai-futures/index.html"); return remote_sha(s, d + "/index.html") == lsha
+        except IOError: return False
+    if root:
+        if not is_root(root): finish(1, "ROOT secret set but its index.html does not match https://isenfors.se/")
+    else:
+        home = s.normalize("."); cands = [home]
+        for e in s.listdir_attr(home):
+            if e.longname.startswith("d"):
+                c = home.rstrip("/") + "/" + e.filename; cands.append(c)
+                try: cands += [c + "/" + x.filename for x in s.listdir_attr(c) if x.longname.startswith("d")]
+                except IOError: pass
+        found = [c for c in cands if is_root(c)]
+        if len(found) != 1: finish(1, "site root auto-detect found %d candidates" % len(found))
+        root = found[0]; res["root_autodetected"] = True; print("site root auto-detected")
+    res["root_confirmed"] = True; print("site root confirmed: index.html identical to live https://isenfors.se/")
+    if CHECK: t.close(); finish(0)
     order = sorted(want, key=lambda p: p == ".htaccess")          # .htaccess last
     made = set()
     def mkd(d):
