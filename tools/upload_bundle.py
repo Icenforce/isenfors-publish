@@ -68,13 +68,23 @@ try:
     if root:
         if not is_root(root): finish(1, "ROOT secret set but its index.html does not match https://isenfors.se/")
     else:
+        import stat as _st
+        def subdirs(d):
+            out = []
+            try: entries = s.listdir_attr(d)
+            except IOError: return out
+            for e in entries:
+                p = d.rstrip("/") + "/" + e.filename
+                mode = e.st_mode
+                if mode is not None and _st.S_ISLNK(mode):
+                    try: mode = s.stat(p).st_mode          # follow symlinks
+                    except IOError: continue
+                if mode is not None and _st.S_ISDIR(mode): out.append(p)
+            return out
         home = s.normalize("."); cands = [home]
-        for e in s.listdir_attr(home):
-            if e.longname.startswith("d"):
-                c = home.rstrip("/") + "/" + e.filename; cands.append(c)
-                try: cands += [c + "/" + x.filename for x in s.listdir_attr(c) if x.longname.startswith("d")]
-                except IOError: pass
-        found = [c for c in cands if is_root(c)]
+        for c in subdirs(home): cands.append(c); cands += subdirs(c)
+        print("root auto-detect: %d candidate folders (depth <= 2)" % len(cands))
+        found = sorted({s.normalize(c) for c in cands if is_root(c)})
         if len(found) != 1: finish(1, "site root auto-detect found %d candidates" % len(found))
         root = found[0]; res["root_autodetected"] = True; print("site root auto-detected")
     res["root_confirmed"] = True; print("site root confirmed: index.html identical to live https://isenfors.se/")
