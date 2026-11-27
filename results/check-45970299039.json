@@ -1,0 +1,13 @@
+{
+ "status": "FAILED",
+ "bundle": "check-45970299039",
+ "run_id": "45970299039",
+ "started_utc": "2026-11-27T09:01:55Z",
+ "uploaded": [],
+ "reason": "site root auto-detect found 0 candidates",
+ "check_only": true,
+ "root_secret_set": false,
+ "hostkey_pinned": true,
+ "login_ok": true,
+ "finished_utc": "2026-11-27T09:01:57Z"
+}
